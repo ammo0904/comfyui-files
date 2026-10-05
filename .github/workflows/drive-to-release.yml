@@ -1,0 +1,43 @@
+name: Google Drive → GitHub Release
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  transfer:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Install gdown
+        run: |
+          python -m pip install --upgrade pip
+          pip install gdown
+
+      - name: Download from Google Drive
+        run: |
+          mkdir -p transfer
+
+          gdown \
+            --id "1wZuOLTX4Uc6D_tvL33n3c2dXvCCBkKVa" \
+            --output "transfer/cinematic_photography_detailed_pony_xl_v5.1.safetensors" \
+            --continue \
+            --retries 5
+
+      - name: Check file
+        run: |
+          ls -lh transfer/
+          stat -c "%s bytes" \
+            "transfer/cinematic_photography_detailed_pony_xl_v5.1.safetensors"
+
+      - name: Upload to GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload \
+            "v1.0.0" \
+            "transfer/cinematic_photography_detailed_pony_xl_v5.1.safetensors" \
+            --repo "${{ github.repository }}" \
+            --clobber
