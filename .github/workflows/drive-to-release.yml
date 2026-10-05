@@ -21,7 +21,7 @@ jobs:
           mkdir -p transfer
 
           gdown \
-            --id "1wZuOLTX4Uc6D_tvL33n3c2dXvCCBkKVa" \
+            "https://drive.google.com/uc?id=1wZuOLTX4Uc6D_tvL33n3c2dXvCCBkKVa" \
             --output "transfer/cinematic_photography_detailed_pony_xl_v5.1.safetensors" \
             --continue \
             --retries 5
