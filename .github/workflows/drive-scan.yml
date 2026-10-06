@@ -1,0 +1,108 @@
+name: Scan Google Drive ComfyUI
+
+on:
+  workflow_dispatch:
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Install gdown
+        run: |
+          python -m pip install --upgrade pip
+          pip install gdown
+
+      - name: Scan Google Drive
+        run: |
+          mkdir -p scan
+
+          gdown \
+            "https://drive.google.com/drive/folders/1Nz7QK_p9VDXNbUPKSfzLU991aGidyfVw" \
+            --json \
+            --quiet \
+            > scan/drive_files.json
+
+      - name: Install jq
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y jq
+
+      - name: Show Drive files
+        run: |
+          echo "===== Google Drive files ====="
+          jq -r '.[] | "\(.path)\t\(.url)"' scan/drive_files.json
+
+      - name: Classify files
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import re
+
+          with open("scan/drive_files.json", "r", encoding="utf-8") as f:
+              files = json.load(f)
+
+          paths = [x["path"] for x in files]
+
+          print()
+          print("=" * 100)
+          print("Google Drive → GitHub Release 搬運分類")
+          print("=" * 100)
+
+          upload = []
+          skip = []
+
+          for item in files:
+              path = item["path"]
+              name = os.path.basename(path)
+              directory = os.path.dirname(path)
+
+              # --------------------------------------------------
+              # 判斷：是否為大型原始檔，而且已有對應 .7z.001
+              # --------------------------------------------------
+
+              is_original = False
+
+              # 例如：
+              # ponyRealism_V22.safetensors
+              # →
+              # ponyRealism_V22.7z.001
+              if "." in name:
+                  stem = name.rsplit(".", 1)[0]
+
+                  split_pattern = re.compile(
+                      r"^" + re.escape(stem) + r"\.7z\.001$",
+                      re.IGNORECASE
+                  )
+
+                  for p in paths:
+                      if os.path.dirname(p) == directory:
+                          split_name = os.path.basename(p)
+
+                          if split_pattern.match(split_name):
+                              is_original = True
+                              break
+
+              if is_original:
+                  skip.append(path)
+              else:
+                  upload.append(path)
+
+          print()
+          print("===== UPLOAD =====")
+          for p in upload:
+              print("UPLOAD:", p)
+
+          print()
+          print("===== SKIP =====")
+          for p in skip:
+              print("SKIP:", p)
+
+          print()
+          print("=" * 100)
+          print(f"UPLOAD: {len(upload)}")
+          print(f"SKIP  : {len(skip)}")
+          print(f"TOTAL : {len(files)}")
+          print("=" * 100)
+          PY
