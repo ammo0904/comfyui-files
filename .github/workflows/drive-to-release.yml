@@ -11,33 +11,293 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Install gdown
+
+      # ============================================================
+      # 1. Install tools
+      # ============================================================
+      - name: Install tools
         run: |
           python -m pip install --upgrade pip
           pip install gdown
+          sudo apt-get update
+          sudo apt-get install -y jq
 
-      - name: Download from Google Drive
+      # ============================================================
+      # 2. Scan Google Drive
+      # ============================================================
+      - name: Scan Google Drive
         run: |
           mkdir -p transfer
 
           gdown \
-            "https://drive.google.com/uc?id=1wZuOLTX4Uc6D_tvL33n3c2dXvCCBkKVa" \
-            --output "transfer/cinematic_photography_detailed_pony_xl_v5.1.safetensors" \
-            --continue \
-            --retries 5
+            "https://drive.google.com/drive/folders/1Nz7QK_p9VDXNbUPKSfzLU991aGidyfVw" \
+            --json \
+            --quiet \
+            > drive_files.json
 
-      - name: Check file
+          echo "===== Google Drive files ====="
+          jq -r '.[] | "\(.path)\t\(.url)"' drive_files.json
+
+      # ============================================================
+      # 3. Build upload manifest
+      # ============================================================
+      - name: Build upload manifest
         run: |
-          ls -lh transfer/
-          stat -c "%s bytes" \
-            "transfer/cinematic_photography_detailed_pony_xl_v5.1.safetensors"
+          python - <<'PY'
+          import json
+          import os
+          import re
 
-      - name: Upload to GitHub Release
+          with open("drive_files.json", "r", encoding="utf-8") as f:
+              files = json.load(f)
+
+          paths = [x["path"] for x in files]
+
+          upload = []
+          skip = []
+
+          for item in files:
+              path = item["path"]
+              name = os.path.basename(path)
+              directory = os.path.dirname(path)
+
+              is_original = False
+
+              if "." in name:
+                  stem = name.rsplit(".", 1)[0]
+
+                  split_pattern = re.compile(
+                      r"^" + re.escape(stem) + r"\.7z\.001$",
+                      re.IGNORECASE
+                  )
+
+                  for p in paths:
+                      if os.path.dirname(p) == directory:
+                          split_name = os.path.basename(p)
+
+                          if split_pattern.match(split_name):
+                              is_original = True
+                              break
+
+              if is_original:
+                  skip.append(path)
+              else:
+                  upload.append(item)
+
+          with open("upload_manifest.json", "w", encoding="utf-8") as f:
+              json.dump(upload, f, ensure_ascii=False, indent=2)
+
+          print()
+          print("=" * 100)
+          print("Google Drive → GitHub Release 搬運分類")
+          print("=" * 100)
+
+          print()
+          print("===== UPLOAD =====")
+
+          for item in upload:
+              print("UPLOAD:", item["path"])
+
+          print()
+          print("===== SKIP =====")
+
+          for path in skip:
+              print("SKIP:", path)
+
+          print()
+          print("=" * 100)
+          print(f"UPLOAD: {len(upload)}")
+          print(f"SKIP  : {len(skip)}")
+          print(f"TOTAL : {len(files)}")
+          print("=" * 100)
+
+          if len(upload) != 22:
+              print()
+              print("ERROR: Expected 22 files to upload.")
+              print(f"Actual upload count: {len(upload)}")
+              raise SystemExit(1)
+
+          if len(skip) != 3:
+              print()
+              print("ERROR: Expected 3 files to skip.")
+              print(f"Actual skip count: {len(skip)}")
+              raise SystemExit(1)
+
+          if len(files) != 25:
+              print()
+              print("ERROR: Expected 25 total files.")
+              print(f"Actual total count: {len(files)}")
+              raise SystemExit(1)
+
+          print()
+          print("Classification check PASSED.")
+
+          PY
+
+      # ============================================================
+      # 4. Check existing GitHub Release
+      # ============================================================
+      - name: Check GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release upload \
-            "v1.0.0" \
-            "transfer/cinematic_photography_detailed_pony_xl_v5.1.safetensors" \
+          echo "===== GitHub Release ====="
+
+          gh release view "v1.0.0" \
+            --repo "${{ github.repository }}"
+
+      # ============================================================
+      # 5. Upload files one by one
+      # ============================================================
+      - name: Transfer files
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -e
+
+          total=$(jq 'length' upload_manifest.json)
+          current=0
+
+          echo
+          echo "============================================================"
+          echo "Starting Google Drive → GitHub Release transfer"
+          echo "Total files: $total"
+          echo "============================================================"
+          echo
+
+          while IFS= read -r item; do
+
+            current=$((current + 1))
+
+            path=$(echo "$item" | jq -r '.path')
+            url=$(echo "$item" | jq -r '.url')
+
+            filename=$(basename "$path")
+
+            echo
+            echo "============================================================"
+            echo "[$current / $total]"
+            echo "File: $path"
+            echo "============================================================"
+
+            rm -rf transfer/*
+            mkdir -p "transfer"
+
+            # --------------------------------------------------------
+            # Download from Google Drive
+            # --------------------------------------------------------
+            echo
+            echo "Downloading from Google Drive..."
+
+            gdown \
+              "$url" \
+              --output "transfer/$filename" \
+              --continue \
+              --retries 5
+
+            # --------------------------------------------------------
+            # Verify file exists
+            # --------------------------------------------------------
+            if [ ! -f "transfer/$filename" ]; then
+              echo
+              echo "ERROR: File was not downloaded:"
+              echo "$filename"
+              exit 1
+            fi
+
+            filesize=$(stat -c "%s" "transfer/$filename")
+
+            echo
+            echo "Downloaded:"
+            echo "  File : $filename"
+            echo "  Size : $filesize bytes"
+
+            if [ "$filesize" -le 0 ]; then
+              echo
+              echo "ERROR: File size is zero."
+              exit 1
+            fi
+
+            # --------------------------------------------------------
+            # Check duplicate asset
+            # --------------------------------------------------------
+            echo
+            echo "Checking GitHub Release asset..."
+
+            if gh release view "v1.0.0" \
+                --repo "${{ github.repository }}" \
+                --json assets \
+                --jq '.assets[].name' \
+                | grep -Fxq "$filename"; then
+
+              echo
+              echo "Asset already exists."
+              echo "Will replace existing asset:"
+              echo "$filename"
+
+            else
+
+              echo
+              echo "Asset does not exist."
+              echo "Uploading new asset:"
+              echo "$filename"
+
+            fi
+
+            # --------------------------------------------------------
+            # Upload to GitHub Release
+            # --------------------------------------------------------
+            echo
+            echo "Uploading to GitHub Release..."
+
+            gh release upload \
+              "v1.0.0" \
+              "transfer/$filename" \
+              --repo "${{ github.repository }}" \
+              --clobber
+
+            echo
+            echo "UPLOAD SUCCESS:"
+            echo "$filename"
+
+            # --------------------------------------------------------
+            # Remove temporary file
+            # --------------------------------------------------------
+            rm -f "transfer/$filename"
+
+            echo
+            echo "Temporary file removed."
+
+          done < <(jq -c '.[]' upload_manifest.json)
+
+          echo
+          echo "============================================================"
+          echo "ALL FILES TRANSFERRED SUCCESSFULLY"
+          echo "============================================================"
+
+      # ============================================================
+      # 6. Final Release verification
+      # ============================================================
+      - name: Verify GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          echo
+          echo "============================================================"
+          echo "GitHub Release v1.0.0"
+          echo "============================================================"
+
+          gh release view "v1.0.0" \
             --repo "${{ github.repository }}" \
-            --clobber
+            --json name,tagName,assets \
+            --jq '
+              "Release: \(.name)",
+              "Tag: \(.tagName)",
+              "Assets:",
+              (.assets[] | "  - \(.name) | \(.size) bytes")
+            '
+
+          echo
+          echo "============================================================"
+          echo "Transfer completed."
+          echo "============================================================"
